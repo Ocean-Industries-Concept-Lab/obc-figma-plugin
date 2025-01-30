@@ -14,8 +14,12 @@
   "ui": "ui.html",
   "codegenLanguages": [
     {
-      "label": "Language Label",
-      "value": "language-value"
+      "label": "variables map",
+      "value": "variables"
+    },
+    {
+      "label": "css",
+      "value": "css"
     }
   ],
   "networkAccess": {
