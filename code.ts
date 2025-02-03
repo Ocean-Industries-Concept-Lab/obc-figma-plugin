@@ -18,12 +18,39 @@ function rename(name: string): string {
 
 
 figma.codegen.on('generate', async (event) => {
+  return await getCss(event);
   if (event.language === 'variables' && false) {
     return await generateColorVariableMap(event);
   } else {
     return await generateCssPaletteFromVariabler(event);
   }
 });
+
+const cssCustomPropertyRegEx = /var\((.*?),(.*?)\)/g;
+
+async function getCss(event: CodegenEvent): Promise<CodegenResult[]> {
+  const colorIds: string[] = [];
+
+  const css = await event.node.getCSSAsync();
+  let result = "";
+  for (const key in css) {
+    let value = css[key];
+    // Replace css custom properties with lower case version and remove default values
+    value = value.replace(cssCustomPropertyRegEx, (match, p1, p2) => {
+      console.log("match", match, p1, p2);
+      return "var(" + p1.toLowerCase() + ")";
+    });
+
+    result += key + ": " + value + ";\n";
+  }
+  return [
+    {
+      language: 'CSS',
+      code: result,
+      title: 'Codegen Plugin',
+    },
+  ];
+}
 
 async function generateColorVariableMap(event: CodegenEvent): Promise<CodegenResult[]> {
   const colorIds: string[] = [];
