@@ -18,6 +18,11 @@
       "value": "variables"
     },
     {
+      "label": "css variables",
+      "value": "cssvariables"
+    }
+    ,
+    {
       "label": "css",
       "value": "css"
     }

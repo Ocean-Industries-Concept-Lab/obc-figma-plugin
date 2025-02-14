@@ -8,30 +8,42 @@
 
 // This provides the callback to generate the code.
 function rename(name: string): string {
-  const o = name.toLowerCase().replace(/\//g, '-').replace(/styles-/g, '');
-  const parts = o.split('-');
-  if (parts.length > 1 && parts[1] === 'on') {
+  const o = name
+    .toLowerCase()
+    .replace(/\//g, "-")
+    .replace(/ /g, "-")
+    .replace(/&/g, "")
+    .replace(/\(/g, "")
+    .replace(/\)/g, "")
+    .replace(/\-\-/g, "-")
+    .replace(/styles-/g, "");
+  const parts = o.split("-");
+  if (parts.length > 1 && parts[1] === "on") {
     parts.shift();
   }
-  return "--" + parts.join('-');
+
+  if (parts.length > 1 && parts[0] === "color") {
+    parts.shift();
+  }
+  return "--" + parts.join("-");
 }
 
-
-figma.codegen.on('generate', async (event) => {
-  return await getCss(event);
-  if (event.language === 'variables' && false) {
+figma.codegen.on("generate", async (event) => {
+  if (event.language === "variables") {
     return await generateColorVariableMap(event);
-  } else {
+  } else if (event.language === "cssvariables") {
     return await generateCssPaletteFromVariabler(event);
+  } else if (event.language === "css") {
+    return await getCss(event);
+  } else {
+    throw new Error("Unsupported language: " + event.language);
   }
 });
 
 const cssCustomPropertyRegEx = /var\((.*?),(.*?)\)/g;
 
 async function getCss(event: CodegenEvent): Promise<CodegenResult[]> {
-  const colorIds: string[] = [];
-
-  const css = await event.node.getCSSAsync();
+   const css = await event.node.getCSSAsync();
   let result = "";
   for (const key in css) {
     let value = css[key];
@@ -45,39 +57,41 @@ async function getCss(event: CodegenEvent): Promise<CodegenResult[]> {
   }
   return [
     {
-      language: 'CSS',
+      language: "CSS",
       code: result,
-      title: 'Codegen Plugin',
+      title: "Codegen Plugin",
     },
   ];
 }
 
-async function generateColorVariableMap(event: CodegenEvent): Promise<CodegenResult[]> {
+async function generateColorVariableMap(
+  event: CodegenEvent
+): Promise<CodegenResult[]> {
   const colorIds: string[] = [];
 
   const findColorIds = (node: SceneNode) => {
-    if ('children' in node) {
+    if ("children" in node) {
       for (const child of node.children) {
         findColorIds(child);
       }
     }
 
-    if ('fills' in node) {
+    if ("fills" in node) {
       const fills = node.fills;
       if (Array.isArray(fills)) {
         for (const fill of fills) {
-          if (fill.type === 'SOLID' && fill.boundVariables?.color) {
+          if (fill.type === "SOLID" && fill.boundVariables?.color) {
             colorIds.push(fill.boundVariables.color.id);
           }
         }
       }
     }
 
-    if ('strokes' in node) {
+    if ("strokes" in node) {
       const strokes = node.strokes;
       if (Array.isArray(strokes)) {
         for (const stroke of strokes) {
-          if (stroke.type === 'SOLID' && stroke.boundVariables?.color) {
+          if (stroke.type === "SOLID" && stroke.boundVariables?.color) {
             colorIds.push(stroke.boundVariables.color.id);
           }
         }
@@ -86,42 +100,55 @@ async function generateColorVariableMap(event: CodegenEvent): Promise<CodegenRes
   };
   findColorIds(event.node);
   const uniqueColorIds = Array.from(new Set(colorIds));
-  const variables = (await Promise.all(uniqueColorIds.map(async (id) => ({
-    id,
-    colorName: (await figma.variables.getVariableByIdAsync(id))?.name
-  }
-  )))).filter(variable => variable.colorName !== undefined) as { id: string; colorName: string; }[];
+  const variables = (
+    await Promise.all(
+      uniqueColorIds.map(async (id) => ({
+        id,
+        colorName: (await figma.variables.getVariableByIdAsync(id))?.name,
+      }))
+    )
+  ).filter((variable) => variable.colorName !== undefined) as {
+    id: string;
+    colorName: string;
+  }[];
   const variableMap: Record<string, string> = {};
-  variables.forEach(variable => variableMap[variable.id] = rename(variable.colorName));;
-  const code = JSON.stringify(variableMap,
-    null, 2);
+  variables.forEach(
+    (variable) => (variableMap[variable.id] = rename(variable.colorName))
+  );
+  const code = JSON.stringify(variableMap, null, 2);
   return [
     {
-      language: 'JSON',
+      language: "JSON",
       code: code,
-      title: 'Codegen Plugin',
+      title: "Codegen Plugin",
     },
   ];
 }
 
-async function generateCssPaletteFromVariabler(event: CodegenEvent): Promise<CodegenResult[]> {
-  console.log("generateCssPaletteFromVariabler1"); 
+async function generateCssPalette(): Promise<string> {
+  console.log("generateCssPaletteFromVariabler1");
   const allVariables = await figma.variables.getLocalVariablesAsync("COLOR");
-  const collectionIds = allVariables.map(v => v.variableCollectionId);
-  const allCollections = await Promise.all(collectionIds.map(i => figma.variables.getVariableCollectionByIdAsync(i)));
-  const uniqueCollections = await Promise.all(Array.from(new Set(collectionIds)).map(i => figma.variables.getVariableCollectionByIdAsync(i)));
-  const paletteCollection = uniqueCollections.find(c => c?.name === "Palette");
+  const collectionIds = allVariables.map((v) => v.variableCollectionId);
+  const allCollections = await Promise.all(
+    collectionIds.map((i) => figma.variables.getVariableCollectionByIdAsync(i))
+  );
+  const uniqueCollections = await Promise.all(
+    Array.from(new Set(collectionIds)).map((i) =>
+      figma.variables.getVariableCollectionByIdAsync(i)
+    )
+  );
+  const paletteCollection = uniqueCollections.find(
+    (c) => c?.name === "Palette"
+  );
   if (!paletteCollection) {
-    return [{
-      language: 'CSS',
-      code: "Pallette collection not found",
-      title: 'Codegen Plugin',
-    },];
+    return "Pallette collection not found";
   }
 
   const modes = paletteCollection.modes;
-  const palletteVariables = allVariables.filter(v => v.variableCollectionId === paletteCollection.id);
-  let out = ""
+  const palletteVariables = allVariables.filter(
+    (v) => v.variableCollectionId === paletteCollection.id
+  );
+  let out = "";
   for (const mode of modes) {
     out += ":root[data-obc-theme='" + mode.name.toLowerCase() + "'] {\n";
     for (const variable of palletteVariables) {
@@ -132,7 +159,9 @@ async function generateCssPaletteFromVariabler(event: CodegenEvent): Promise<Cod
       }
       if ("type" in value && value.type === "VARIABLE_ALIAS") {
         const alias = value as VariableAlias;
-        let aliasVariable: Variable | null | undefined = allVariables.find(v => v.id === alias.id);
+        let aliasVariable: Variable | null | undefined = allVariables.find(
+          (v) => v.id === alias.id
+        );
         if (!aliasVariable) {
           aliasVariable = await figma.variables.getVariableByIdAsync(alias.id);
           if (!aliasVariable) {
@@ -143,34 +172,150 @@ async function generateCssPaletteFromVariabler(event: CodegenEvent): Promise<Cod
         if (aliasVariable.variableCollectionId === paletteCollection.id) {
           value = aliasVariable.valuesByMode[mode.modeId];
         } else {
-          const collection = allCollections.find(c => c?.id === aliasVariable.variableCollectionId);
+          const collection = allCollections.find(
+            (c) => c?.id === aliasVariable.variableCollectionId
+          );
           if (!collection) {
-            console.warn("Collection not found", aliasVariable.variableCollectionId);
+            console.warn(
+              "Collection not found",
+              aliasVariable.variableCollectionId
+            );
             continue;
           }
-          const collectionMode = collection.modes.length === 1 ?
-            collection.modes[0]
-            : collection.modes.find(m => m.name === "WCAG" || m.name === "Default");
+          const collectionMode =
+            collection.modes.length === 1
+              ? collection.modes[0]
+              : collection.modes.find(
+                  (m) => m.name === "WCAG" || m.name === "Default"
+                );
           if (!collectionMode) {
             console.warn("Mode not found", "WCAG", collection.modes);
             continue;
           }
           value = aliasVariable.valuesByMode[collectionMode.modeId];
         }
-        
       }
       const color = rgbaToHexOrColorName(value as Color);
-        const name = rename(variable.name);
-        out += "  " + name + ": " + color + ";\n";
+      const name = rename(variable.name);
+      out += "  " + name + ": " + color + ";\n";
     }
     out += "}\n";
   }
+  return out;
+}
 
-return [{
-  language: 'CSS',
-  code: out,
-  title: 'Codegen Plugin',
-},];
+async function generateCssSizes(options: {collectionName: string, cssPrefix: string}): Promise<string> {
+  console.log("generate css sizes");
+  const allVariables = await figma.variables.getLocalVariablesAsync();
+  const collectionIds = allVariables.map((v) => v.variableCollectionId);
+  const uniqueCollections = await Promise.all(
+    Array.from(new Set(collectionIds)).map((i) =>
+      figma.variables.getVariableCollectionByIdAsync(i)
+    )
+  );
+  const paletteCollection = uniqueCollections.find(
+    (c) => c?.name === options.collectionName
+  );
+  if (!paletteCollection) {
+    return "Component size collection not found";
+  }
+
+  const modes = paletteCollection.modes;
+  const palletteVariables = allVariables.filter(
+    (v) => v.variableCollectionId === paletteCollection.id
+  );
+  let out = "";
+  for (const mode of modes) {
+    out += options.cssPrefix + mode.name.toLowerCase() + " {\n";
+    for (const variable of palletteVariables) {
+      const name = rename(variable.name);
+      let value = variable.valuesByMode[mode.modeId];
+      out += await value2str(value, name, allVariables);
+    }
+    out += "}\n";
+  }
+  return out;
+}
+
+async function generateCssSizesFixedMode(options: {collectionName: string, mode: string}): Promise<string> {
+  console.log("generate css sizes");
+  const allVariables = await figma.variables.getLocalVariablesAsync();
+  const collectionIds = allVariables.map((v) => v.variableCollectionId);
+  const uniqueCollections = await Promise.all(
+    Array.from(new Set(collectionIds)).map((i) =>
+      figma.variables.getVariableCollectionByIdAsync(i)
+    )
+  );
+  const paletteCollection = uniqueCollections.find(
+    (c) => c?.name === options.collectionName
+  );
+  if (!paletteCollection) {
+    return "Component size collection not found";
+  }
+
+  const palletteVariables = allVariables.filter(
+    (v) => v.variableCollectionId === paletteCollection.id
+  );
+  let out = "";
+  const mode = paletteCollection.modes.length > 1 ? paletteCollection.modes.find(m => m.name === options.mode)! : paletteCollection.modes[0];
+  out +=  "* {\n";
+  for (const variable of palletteVariables) {
+    const name = rename(variable.name);
+    let value = variable.valuesByMode[mode.modeId];
+    out += await value2str(value, name, allVariables);
+  }
+  out += "}\n";
+  
+  return out;
+}
+
+async function value2str(value: VariableValue, name: string, allVariables: Variable[]): Promise<string> {
+  if (typeof value === "number") {
+    if (name.includes("font-weight")) {
+      return "  " + name + ": " + value + ";\n";
+    }
+    if (value === 0) {
+      return "  " + name + ": 0;\n";
+    } else {
+      return "  " + name + ": " + value + "px;\n";
+    }
+  } else if (typeof value === "string") {
+    return `  ${name}: '${value}';\n`;
+  } else if (typeof value === "object"  && "type" in value && value.type === "VARIABLE_ALIAS") {
+    const alias = value as VariableAlias;
+    let aliasVariable: Variable | null | undefined = allVariables.find(
+      (v) => v.id === alias.id
+    );
+    if (!aliasVariable) {
+      aliasVariable = await figma.variables.getVariableByIdAsync(alias.id);
+      if (!aliasVariable) {
+        console.warn("Variable not found", alias.id);
+        return "";
+      }
+    }
+    return "  " + name + ": var(" + rename(aliasVariable.name) + ");\n";
+  } else {
+    console.warn("skipping", value);
+    return "";
+  }
+}
+
+async function generateCssPaletteFromVariabler(
+  event: CodegenEvent
+): Promise<CodegenResult[]> {
+  let out = await generateCssSizes({collectionName: "Component-size", cssPrefix: ".obc-component-size-"});
+  out += "\n\n" + await generateCssSizesFixedMode({collectionName: ".typography-primitives", mode: "Regular"});
+  out += "\n\n" + await generateCssSizesFixedMode({collectionName: "Set-component-corners", mode: "Regular"});
+  out += "\n\n" + await generateCssSizesFixedMode({collectionName: "component-primitives", mode: "Value"});
+  out += "\n\n" + await generateCssPalette();
+
+  return [
+    {
+      language: "CSS",
+      code: out,
+      title: "Codegen Plugin",
+    },
+  ];
 }
 
 function decimalToHex(d: number): string {
@@ -191,8 +336,12 @@ type Color = {
 
 function rgbaToHexOrColorName(rgba: Color): string {
   if (rgba.a < 1) {
-    return `rgb(${Math.round(rgba.r * 255)}, ${Math.round(rgba.g * 255)}, ${Math.round(rgba.b * 255)}, ${rgba.a})`;
+    return `rgb(${Math.round(rgba.r * 255)}, ${Math.round(
+      rgba.g * 255
+    )}, ${Math.round(rgba.b * 255)}, ${rgba.a})`;
   } else {
-    return `rgb(${Math.round(rgba.r * 255)}, ${Math.round(rgba.g * 255)}, ${Math.round(rgba.b * 255)})`;
+    return `rgb(${Math.round(rgba.r * 255)}, ${Math.round(
+      rgba.g * 255
+    )}, ${Math.round(rgba.b * 255)})`;
   }
 }
