@@ -8,7 +8,7 @@
 
 // This provides the callback to generate the code.
 function rename(name: string): string {
-  const o = name
+  let o = name
     .toLowerCase()
     .replace(/\//g, "-")
     .replace(/ /g, "-")
@@ -17,10 +17,16 @@ function rename(name: string): string {
     .replace(/\)/g, "")
     .replace(/\-\-/g, "-")
     .replace(/styles-/g, "");
-  const parts = o.split("-");
-  if (parts.length > 1 && parts[1] === "on") {
-    parts.shift();
+  const hasOnRegex = /^.*-on-(.*)$/;
+  if (hasOnRegex.test(o)) {
+    const match = hasOnRegex.exec(o);
+    if (match) {
+      o = "on-" + match[1];
+    }
   }
+
+  const parts = o.split("-");
+  
 
   if (parts.length > 1 && parts[0] === "color") {
     parts.shift();
@@ -127,7 +133,7 @@ async function generateColorVariableMap(
 
 async function generateCssPalette(): Promise<string> {
   console.log("generateCssPaletteFromVariabler1");
-  const allVariables = await figma.variables.getLocalVariablesAsync("COLOR");
+  const allVariables = await figma.variables.getLocalVariablesAsync();
   const collectionIds = allVariables.map((v) => v.variableCollectionId);
   const allCollections = await Promise.all(
     collectionIds.map((i) => figma.variables.getVariableCollectionByIdAsync(i))
@@ -151,12 +157,14 @@ async function generateCssPalette(): Promise<string> {
   let out = "";
   for (const mode of modes) {
     out += ":root[data-obc-theme='" + mode.name.toLowerCase() + "'] {\n";
+    out += fixedPalletContent[mode.name.toLowerCase()];
     for (const variable of palletteVariables) {
       let value = variable.valuesByMode[mode.modeId];
+      const name = rename(variable.name);
       if (!(value instanceof Object)) {
-        console.warn("skipping", value);
+        out += await value2str(value, name, allVariables);
         continue;
-      }
+      } 
       if ("type" in value && value.type === "VARIABLE_ALIAS") {
         const alias = value as VariableAlias;
         let aliasVariable: Variable | null | undefined = allVariables.find(
@@ -196,7 +204,6 @@ async function generateCssPalette(): Promise<string> {
         }
       }
       const color = rgbaToHexOrColorName(value as Color);
-      const name = rename(variable.name);
       out += "  " + name + ": " + color + ";\n";
     }
     out += "}\n";
@@ -238,7 +245,6 @@ async function generateCssSizes(options: {collectionName: string, cssPrefix: str
 }
 
 async function generateCssSizesFixedMode(options: {collectionName: string, mode: string}): Promise<string> {
-  console.log("generate css sizes");
   const allVariables = await figma.variables.getLocalVariablesAsync();
   const collectionIds = allVariables.map((v) => v.variableCollectionId);
   const uniqueCollections = await Promise.all(
@@ -258,13 +264,11 @@ async function generateCssSizesFixedMode(options: {collectionName: string, mode:
   );
   let out = "";
   const mode = paletteCollection.modes.length > 1 ? paletteCollection.modes.find(m => m.name === options.mode)! : paletteCollection.modes[0];
-  out +=  "* {\n";
   for (const variable of palletteVariables) {
     const name = rename(variable.name);
     let value = variable.valuesByMode[mode.modeId];
     out += await value2str(value, name, allVariables);
   }
-  out += "}\n";
   
   return out;
 }
@@ -280,6 +284,11 @@ async function value2str(value: VariableValue, name: string, allVariables: Varia
       return "  " + name + ": " + value + "px;\n";
     }
   } else if (typeof value === "string") {
+    if (value === "noto-sans") {
+      value = "Noto Sans";
+    } else if (value === "open-sans") {
+      value = "Open Sans";
+    }
     return `  ${name}: '${value}';\n`;
   } else if (typeof value === "object"  && "type" in value && value.type === "VARIABLE_ALIAS") {
     const alias = value as VariableAlias;
@@ -304,10 +313,14 @@ async function generateCssPaletteFromVariabler(
   event: CodegenEvent
 ): Promise<CodegenResult[]> {
   let out = await generateCssSizes({collectionName: "Component-size", cssPrefix: ".obc-component-size-"});
-  out += "\n\n" + await generateCssSizesFixedMode({collectionName: ".typography-primitives", mode: "Regular"});
-  out += "\n\n" + await generateCssSizesFixedMode({collectionName: "Set-component-corners", mode: "Regular"});
-  out += "\n\n" + await generateCssSizesFixedMode({collectionName: "component-primitives", mode: "Value"});
+  out += "* {\n";
+  out += await generateCssSizesFixedMode({collectionName: ".typography-primitives", mode: "Regular"});
+  out += await generateCssSizesFixedMode({collectionName: "Set-component-corners", mode: "Regular"});
+  out += await generateCssSizesFixedMode({collectionName: "component-primitives", mode: "Value"});
+  out += fixedCssContent;
+  out += "} \n";
   out += "\n\n" + await generateCssPalette();
+  out += extraCss;
 
   return [
     {
@@ -317,6 +330,163 @@ async function generateCssPaletteFromVariabler(
     },
   ];
 }
+
+const fixedCssContent= ` --shadow-flat: var(--shadow-flat-x) var(--shadow-flat-y)
+    var(--shadow-flat-blur) var(--shadow-flat-spread) var(--shadow-flat-color);
+  --shadow-raised: var(--shadow-raised-x) var(--shadow-raised-y)
+    var(--shadow-raised-blur) var(--shadow-raised-spread)
+    var(--shadow-raised-color);
+  --shadow-floating: var(--shadow-floating-x) var(--shadow-floating-y)
+    var(--shadow-floating-blur) var(--shadow-floating-spread)
+    var(--shadow-floating-color);
+  --shadow-overlay: var(--shadow-overlay-x) var(--shadow-overlay-y)
+    var(--shadow-overlay-blur) var(--shadow-overlay-spread)
+    var(--shadow-overlay-color);
+    `;
+
+const fixedPalletContent: {[pallet: string]: string} = {
+  "day": `  --icon-02-chevron-up: url('data:image/svg+xml,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M6 14.0002L7.41 15.4102L12 10.8302L16.59 15.4102L18 14.0002L12 8.00016L6 14.0002Z" fill="rgba(0, 0, 0, 0.55)"/></svg>');
+  --icon-02-chevron-down: url('data:image/svg+xml,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M18 9.41L16.59 8L12 12.58L7.41 8L6 9.41L12 15.41L18 9.41Z" fill="rgba(0, 0, 0, 0.55)"/></svg>');`,
+  "dusk": `  --icon-02-chevron-up: url('data:image/svg+xml,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M6 14.0002L7.41 15.4102L12 10.8302L16.59 15.4102L18 14.0002L12 8.00016L6 14.0002Z" fill="rgba(255, 255, 255, .550)"/></svg>');
+  --icon-02-chevron-down: url('data:image/svg+xml,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M18 9.41L16.59 8L12 12.58L7.41 8L6 9.41L12 15.41L18 9.41Z" fill="rgba(255, 255, 255, .550)"/></svg>');
+  `,
+  "night": `--icon-02-chevron-up: url('data:image/svg+xml,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M6 14.0002L7.41 15.4102L12 10.8302L16.59 15.4102L18 14.0002L12 8.00016L6 14.0002Z" fill="rgb(51, 51, 0)"/></svg>');
+  --icon-02-chevron-down: url('data:image/svg+xml,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M18 9.41L16.59 8L12 12.58L7.41 8L6 9.41L12 15.41L18 9.41Z" fill="rgb(51, 51, 0)"/></svg>');
+  `,
+  "bright": ` --icon-02-chevron-up: url('data:image/svg+xml,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M6 14.0002L7.41 15.4102L12 10.8302L16.59 15.4102L18 14.0002L12 8.00016L6 14.0002Z" fill="rgba(0, 0, 0, .650)"/></svg>');
+  --icon-02-chevron-down: url('data:image/svg+xml,<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="    M18 9.41L16.59 8L12 12.58L7.41 8L6 9.41L12 15.41L18 9.41Z" fill="rgba(0, 0, 0, .650)"/></svg>');
+  `,
+};
+
+const extraCss = `
+@property --alarm-blink-on {
+  syntax: "number";
+  inherits: true;
+  initial-value: 1;
+}
+
+@property --alarm-blink-off {
+  syntax: "number";
+  inherits: true;
+  initial-value: 0;
+}
+
+@keyframes warning-blink {
+  0% {
+    --warning-blink-on: 1;
+    --warning-blink-off: 0;
+    --alarm-blink-on: 1;
+    --alarm-blink-off: 0;
+  }
+
+  25% {
+    --alarm-blink-on: 0;
+    --alarm-blink-off: 1;
+  }
+
+  50% {
+    --warning-blink-on: 0;
+    --warning-blink-off: 1;
+    --alarm-blink-on: 1;
+    --alarm-blink-off: 0;
+  }
+
+  75% {
+    --alarm-blink-on: 0;
+    --alarm-blink-off: 1;
+  }
+
+  100% {
+    --warning-blink-on: 1;
+    --warning-blink-off: 0;
+  }
+}
+
+@property --warning-blink-on {
+  syntax: "number";
+  inherits: true;
+  initial-value: 1;
+}
+
+@property --warning-blink-off {
+  syntax: "number";
+  inherits: true;
+  initial-value: 0;
+}
+
+:root {
+  animation: warning-blink 4s infinite;
+  animation-timing-function: steps(1);
+}
+
+
+.obc-radio-button {
+&input, & input {
+    box-sizing: border-box;
+    appearance: none;
+    width: var(--ui-components-radio-button-selection-size);
+    height: var(--ui-components-radio-button-selection-size); 
+    margin: 0;
+    border-radius: 100%;
+    @mixin style style=indent;
+
+    & &:hover, &:focus, &:active {
+        border-color: var(--element-inactive-color);
+    }
+
+    &:checked {
+        @mixin style style=selected;
+
+        &::before {
+            display: block;
+            position: relative;
+            top: calc( ( var(--ui-components-radio-button-selection-size) - var(--ui-components-radio-button-thumb-size) - 2px ) / 2 );
+            left: calc( ( var(--ui-components-radio-button-selection-size) - var(--ui-components-radio-button-thumb-size) - 2px ) / 2 );
+            content: '';
+            width: var(--ui-components-radio-button-thumb-size);
+            height: var(--ui-components-radio-button-thumb-size);
+            background-color: var(--on-selected-active-color);
+            border-radius: 100%;
+        }
+    }
+
+    :not(.has-label) &:focus-visible   {
+        outline: none;
+    }
+}
+
+& .label {
+    padding: 0px var(--ui-components-radio-button-label-spacing);
+}
+
+&label {
+    box-sizing: border-box;
+    @mixin style style=flat;
+    @mixin font-body;
+    color: var(--element-active-color);
+
+    display: flex;
+    width: 100%;
+    height: var(--ui-components-radio-button-touch-target-size);
+    padding: 0 var(--ui-components-radio-button-padding-horizontal);
+    border-radius: var(--ui-components-radio-button-border-radius);
+
+    align-items: center;
+    flex-shrink: 0;
+
+    &:has(input:focus-visible) {
+        outline-color: var(--color-border-focus-color);
+        outline-width: var(--global-size-spacing-border-weight-focusframe);
+        outline-style: solid;
+    }
+}
+
+&label:has(input:checked) {
+    @mixin font-body-active;
+}
+}
+`
+
 
 function decimalToHex(d: number): string {
   const v = Math.round(d * 255).toString(16);
