@@ -50,21 +50,23 @@ const cssCustomPropertyRegEx = /var\((.*?),(.*?)\)/g;
 
 async function getCss(event: CodegenEvent): Promise<CodegenResult[]> {
    const css = await event.node.getCSSAsync();
-  let result = "";
+  let result = [];
   for (const key in css) {
     let value = css[key];
     // Replace css custom properties with lower case version and remove default values
     value = value.replace(cssCustomPropertyRegEx, (match, p1, p2) => {
-      console.log("match", match, p1, p2);
-      return "var(" + p1.toLowerCase() + ")";
+      // Remove default value
+      // remove -- from p1 before renaming
+      p1 = p1.replace(/--/g, "");
+      return "var(" + rename(p1) + ")";
     });
 
-    result += key + ": " + value + ";\n";
+    result.push(key + ": " + value + ";");
   }
   return [
     {
       language: "CSS",
-      code: result,
+      code: result.join("\n"),
       title: "Codegen Plugin",
     },
   ];
@@ -278,11 +280,7 @@ async function value2str(value: VariableValue, name: string, allVariables: Varia
     if (name.includes("font-weight")) {
       return "  " + name + ": " + value + ";\n";
     }
-    if (value === 0) {
-      return "  " + name + ": 0;\n";
-    } else {
-      return "  " + name + ": " + value + "px;\n";
-    }
+    return "  " + name + ": " + value + "px;\n";
   } else if (typeof value === "string") {
     if (value === "noto-sans") {
       value = "Noto Sans";
@@ -419,72 +417,6 @@ const extraCss = `
   animation-timing-function: steps(1);
 }
 
-
-.obc-radio-button {
-&input, & input {
-    box-sizing: border-box;
-    appearance: none;
-    width: var(--ui-components-radio-button-selection-size);
-    height: var(--ui-components-radio-button-selection-size); 
-    margin: 0;
-    border-radius: 100%;
-    @mixin style style=indent;
-
-    & &:hover, &:focus, &:active {
-        border-color: var(--element-inactive-color);
-    }
-
-    &:checked {
-        @mixin style style=selected;
-
-        &::before {
-            display: block;
-            position: relative;
-            top: calc( ( var(--ui-components-radio-button-selection-size) - var(--ui-components-radio-button-thumb-size) - 2px ) / 2 );
-            left: calc( ( var(--ui-components-radio-button-selection-size) - var(--ui-components-radio-button-thumb-size) - 2px ) / 2 );
-            content: '';
-            width: var(--ui-components-radio-button-thumb-size);
-            height: var(--ui-components-radio-button-thumb-size);
-            background-color: var(--on-selected-active-color);
-            border-radius: 100%;
-        }
-    }
-
-    :not(.has-label) &:focus-visible   {
-        outline: none;
-    }
-}
-
-& .label {
-    padding: 0px var(--ui-components-radio-button-label-spacing);
-}
-
-&label {
-    box-sizing: border-box;
-    @mixin style style=flat;
-    @mixin font-body;
-    color: var(--element-active-color);
-
-    display: flex;
-    width: 100%;
-    height: var(--ui-components-radio-button-touch-target-size);
-    padding: 0 var(--ui-components-radio-button-padding-horizontal);
-    border-radius: var(--ui-components-radio-button-border-radius);
-
-    align-items: center;
-    flex-shrink: 0;
-
-    &:has(input:focus-visible) {
-        outline-color: var(--color-border-focus-color);
-        outline-width: var(--global-size-spacing-border-weight-focusframe);
-        outline-style: solid;
-    }
-}
-
-&label:has(input:checked) {
-    @mixin font-body-active;
-}
-}
 `
 
 
