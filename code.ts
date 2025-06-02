@@ -6,6 +6,15 @@
 // You can access browser APIs in the <script> tag inside "ui.html" which has a
 // full browser environment (See https://www.figma.com/plugin-docs/how-plugins-run).
 
+
+const VariableModes: Record<string, string> = {
+  "Palette-night-config": "Default",
+  ".Color-primitives-dusk": "WCAG 2",
+  ".Color-primitives-day": "WCAG 2",
+  "Color-primitives-night": "WCAG",
+  "dusk-configuration": "v2",
+}
+
 // This provides the callback to generate the code.
 function rename(name: string): string {
   let o = name
@@ -192,12 +201,17 @@ async function generateCssPalette(): Promise<string> {
             );
             continue;
           }
-          const collectionMode =
-            collection.modes.length === 1
-              ? collection.modes[0]
-              : collection.modes.find(
-                  (m) => m.name === "WCAG" || m.name === "Default"
-                );
+          let collectionMode: { modeId: string; name: string } | undefined;
+          if (collection.modes.length === 1) {
+            collectionMode = collection.modes[0];
+          } else if (collection.name in VariableModes) {
+            collectionMode = collection.modes.find(
+              (m) => m.name === VariableModes[collection.name]
+            );
+          } else {
+            console.warn("Collection mode not found", collection.name, collection.modes);
+            continue;
+          }
           if (!collectionMode) {
             console.warn("Mode not found", "WCAG", collection.modes);
             continue;
