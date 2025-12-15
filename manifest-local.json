@@ -1,5 +1,5 @@
 {
-  "name": "OpenBridge devtools",
+  "name": "OpenBridge icon",
   "id": "1448419213272098259",
   "api": "1.0.0",
   "main": "code.js",
@@ -14,12 +14,17 @@
   "ui": "ui.html",
   "codegenLanguages": [
     {
-      "label": "css",
-      "value": "css"
+      "label": "variables map",
+      "value": "variables"
     },
     {
-      "label": "css variables export",
+      "label": "css variables",
       "value": "cssvariables"
+    }
+    ,
+    {
+      "label": "css",
+      "value": "css"
     }
   ],
   "networkAccess": {
