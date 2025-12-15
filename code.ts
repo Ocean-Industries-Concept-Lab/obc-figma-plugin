@@ -9,8 +9,10 @@
 
 const VariableModes: Record<string, string> = {
   "Palette-night-config": "Default",
-  ".Color-primitives-dusk": "WCAG 2",
-  ".Color-primitives-day": "WCAG 2",
+  "Palette-dusk-configuration": "v2",
+  "Palette-day-configuration": "Regular",
+  "Color-primitives-dusk": "WCAG",
+  "Color-primitives-day": "WCAG",
   "Color-primitives-night": "WCAG",
   "dusk-configuration": "v2",
 }
@@ -24,10 +26,11 @@ function rename(name: string): string {
     .replace(/&/g, "")
     .replace(/\(/g, "")
     .replace(/\)/g, "")
-    .replace(/\-\-/g, "-")
+    .replace(/--/g, "-")
     .replace(/styles-/g, "");
   const hasOnRegex = /^.*-on-(.*)$/;
-  if (hasOnRegex.test(o)) {
+  const hasIntegrationRegex = /^.*-integration-(.*)$/;
+  if (hasOnRegex.test(o) && !hasIntegrationRegex.test(o)) {
     const match = hasOnRegex.exec(o);
     if (match) {
       o = "on-" + match[1];
@@ -47,7 +50,7 @@ figma.codegen.on("generate", async (event) => {
   if (event.language === "variables") {
     return await generateColorVariableMap(event);
   } else if (event.language === "cssvariables") {
-    return await generateCssPaletteFromVariabler(event);
+    return await generateCssPaletteFromVariabler();
   } else if (event.language === "css") {
     return await getCss(event);
   } else {
@@ -55,15 +58,15 @@ figma.codegen.on("generate", async (event) => {
   }
 });
 
-const cssCustomPropertyRegEx = /var\((.*?),(.*?)\)/g;
+const cssCustomPropertyRegEx = /var\(([^)(]*?),([^)(]*?)(\(.*?\))?\)/g;
 
 async function getCss(event: CodegenEvent): Promise<CodegenResult[]> {
    const css = await event.node.getCSSAsync();
-  let result = [];
+  const result = [];
   for (const key in css) {
     let value = css[key];
     // Replace css custom properties with lower case version and remove default values
-    value = value.replace(cssCustomPropertyRegEx, (match, p1, p2) => {
+    value = value.replace(cssCustomPropertyRegEx, (match, p1) => {
       // Remove default value
       // remove -- from p1 before renaming
       p1 = p1.replace(/--/g, "");
@@ -71,7 +74,13 @@ async function getCss(event: CodegenEvent): Promise<CodegenResult[]> {
     });
 
     result.push(key + ": " + value + ";");
+
+    if (key.startsWith("box-shadow")) {
+      console.log(key, css[key]);
+      console.log(value);
+    }
   }
+
   return [
     {
       language: "CSS",
@@ -130,7 +139,7 @@ async function generateColorVariableMap(
   }[];
   const variableMap: Record<string, string> = {};
   variables.forEach(
-    (variable) => (variableMap[variable.id] = rename(variable.colorName))
+    (variable) => (variableMap[variable.id] = rename(variable.colorName).replace("--", ""))
   );
   const code = JSON.stringify(variableMap, null, 2);
   return [
@@ -141,6 +150,70 @@ async function generateColorVariableMap(
     },
   ];
 }
+
+async function followVariableReferences(
+  value: VariableValue | null, allVariables: Variable[], allCollections: (VariableCollection | null)[], paletteCollection: VariableCollection, mode: { modeId: string; name: string }
+) : Promise<VariableValue | null>  {
+    if (value === null || value === undefined) {
+      console.warn("Value is null or undefined", value);
+      return null;
+    }
+    if (typeof value === "object" && "type" in value && value.type === "VARIABLE_ALIAS") {
+        const alias = value as VariableAlias;
+        let aliasVariable: Variable | null | undefined = allVariables.find(
+          (v) => v.id === alias.id
+        );
+        if (!aliasVariable) {
+          aliasVariable = await figma.variables.getVariableByIdAsync(alias.id);
+          if (!aliasVariable) {
+            console.warn("Variable not found", alias.id);
+            return null
+          }
+        }
+        if (aliasVariable.variableCollectionId === paletteCollection.id) {
+          value = aliasVariable.valuesByMode[mode.modeId];
+          value = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode);
+        } else {
+          const collection = allCollections.find(
+            (c) => c?.id === aliasVariable.variableCollectionId
+          );
+          if (!collection) {
+            console.warn(
+              "Collection not found",
+              aliasVariable.variableCollectionId
+            );
+            return null
+          }
+          let collectionMode: { modeId: string; name: string } | undefined;
+          if (collection.modes.length === 1) {
+            collectionMode = collection.modes[0];
+          } else if (collection.name in VariableModes) {
+            collectionMode = collection.modes.find(
+              (m) => m.name === VariableModes[collection.name]
+            );
+          } else {
+            console.warn("Collection mode not found", collection.name, collection.modes);
+            return null
+          }
+          if (!collectionMode) {
+            console.warn("Mode not found", "WCAG", collection.modes);
+            return null
+          }
+          value = aliasVariable.valuesByMode[collectionMode.modeId];
+          if (value === null || value === undefined) {
+            console.warn("Value is null or undefined", aliasVariable.name, collectionMode.name);
+            return null;
+          }
+          const out = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode);
+          if (out === null || out === undefined) {
+            console.warn("Follow variable references returned null", aliasVariable.name, mode.name);
+            return null;
+          }
+          value = out;
+        }
+      }
+      return value;
+    }
 
 async function generateCssPalette(): Promise<string> {
   console.log("generateCssPaletteFromVariabler1");
@@ -167,60 +240,32 @@ async function generateCssPalette(): Promise<string> {
   );
   let out = "";
   for (const mode of modes) {
+    if (mode.name.toLowerCase() === "day") {
+      out += ":root, ";
+    }
     out += ":root[data-obc-theme='" + mode.name.toLowerCase() + "'] {\n";
     out += fixedPalletContent[mode.name.toLowerCase()];
     for (const variable of palletteVariables) {
-      let value = variable.valuesByMode[mode.modeId];
+      let value: VariableValue | null = variable.valuesByMode[mode.modeId];
       const name = rename(variable.name);
+      value = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode);
       if (!(value instanceof Object)) {
         out += await value2str(value, name, allVariables);
         continue;
       } 
-      if ("type" in value && value.type === "VARIABLE_ALIAS") {
-        const alias = value as VariableAlias;
-        let aliasVariable: Variable | null | undefined = allVariables.find(
-          (v) => v.id === alias.id
-        );
-        if (!aliasVariable) {
-          aliasVariable = await figma.variables.getVariableByIdAsync(alias.id);
-          if (!aliasVariable) {
-            console.warn("Variable not found", alias.id);
-            continue;
-          }
-        }
-        if (aliasVariable.variableCollectionId === paletteCollection.id) {
-          value = aliasVariable.valuesByMode[mode.modeId];
-        } else {
-          const collection = allCollections.find(
-            (c) => c?.id === aliasVariable.variableCollectionId
-          );
-          if (!collection) {
-            console.warn(
-              "Collection not found",
-              aliasVariable.variableCollectionId
-            );
-            continue;
-          }
-          let collectionMode: { modeId: string; name: string } | undefined;
-          if (collection.modes.length === 1) {
-            collectionMode = collection.modes[0];
-          } else if (collection.name in VariableModes) {
-            collectionMode = collection.modes.find(
-              (m) => m.name === VariableModes[collection.name]
-            );
-          } else {
-            console.warn("Collection mode not found", collection.name, collection.modes);
-            continue;
-          }
-          if (!collectionMode) {
-            console.warn("Mode not found", "WCAG", collection.modes);
-            continue;
-          }
-          value = aliasVariable.valuesByMode[collectionMode.modeId];
-        }
+
+      if (value === null || value === undefined) {
+        console.warn("Variable not found", variable.name, mode.name);
+        continue;
       }
-      const color = rgbaToHexOrColorName(value as Color);
-      out += "  " + name + ": " + color + ";\n";
+      try {
+        const color = rgbaToHexOrColorName(value as Color);
+        out += "  " + name + ": " + color + ";\n";
+      } catch (e) {
+        console.warn("Error converting color", variable.name, mode.name, value);
+        continue;
+      }
+      
     }
     out += "}\n";
   }
@@ -249,10 +294,13 @@ async function generateCssSizes(options: {collectionName: string, cssPrefix: str
   );
   let out = "";
   for (const mode of modes) {
+    if (mode.name.toLowerCase() === "regular") {
+      out += ":root, ";
+    }
     out += options.cssPrefix + mode.name.toLowerCase() + " {\n";
     for (const variable of palletteVariables) {
       const name = rename(variable.name);
-      let value = variable.valuesByMode[mode.modeId];
+      const value = variable.valuesByMode[mode.modeId];
       out += await value2str(value, name, allVariables);
     }
     out += "}\n";
@@ -282,14 +330,18 @@ async function generateCssSizesFixedMode(options: {collectionName: string, mode:
   const mode = paletteCollection.modes.length > 1 ? paletteCollection.modes.find(m => m.name === options.mode)! : paletteCollection.modes[0];
   for (const variable of palletteVariables) {
     const name = rename(variable.name);
-    let value = variable.valuesByMode[mode.modeId];
+    const value = variable.valuesByMode[mode.modeId];
     out += await value2str(value, name, allVariables);
   }
   
   return out;
 }
 
-async function value2str(value: VariableValue, name: string, allVariables: Variable[]): Promise<string> {
+async function value2str(value: VariableValue | null | undefined, name: string, allVariables: Variable[]): Promise<string> {
+  if (value === null || value === undefined) {
+    console.warn("Value is null or undefined", name);
+    return "";
+  }
   if (typeof value === "number") {
     if (name.includes("font-weight")) {
       return "  " + name + ": " + value + ";\n";
@@ -321,9 +373,7 @@ async function value2str(value: VariableValue, name: string, allVariables: Varia
   }
 }
 
-async function generateCssPaletteFromVariabler(
-  event: CodegenEvent
-): Promise<CodegenResult[]> {
+async function generateCssPaletteFromVariabler(): Promise<CodegenResult[]> {
   let out = await generateCssSizes({collectionName: "Component-size", cssPrefix: ".obc-component-size-"});
   out += "* {\n";
   out += await generateCssSizesFixedMode({collectionName: ".typography-primitives", mode: "Regular"});
@@ -433,12 +483,6 @@ const extraCss = `
 
 `
 
-
-function decimalToHex(d: number): string {
-  const v = Math.round(d * 255).toString(16);
-  return v.length === 1 ? `0${v}` : v;
-}
-
 type Color = {
   /** Red channel value, between 0 and 1 */
   r: number;
@@ -456,6 +500,9 @@ function rgbaToHexOrColorName(rgba: Color): string {
       rgba.g * 255
     )}, ${Math.round(rgba.b * 255)}, ${rgba.a})`;
   } else {
+    if (Number.isNaN(Math.round(rgba.r * 255))) {
+      throw new Error("NaN: " + JSON.stringify(rgba));
+    }
     return `rgb(${Math.round(rgba.r * 255)}, ${Math.round(
       rgba.g * 255
     )}, ${Math.round(rgba.b * 255)})`;
