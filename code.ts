@@ -11,7 +11,7 @@ const VariableModes: Record<string, string> = {
   "Palette-night-config": "Default",
   "Palette-dusk-configuration": "v2",
   "Palette-day-configuration": "Regular",
-  "Color-primitives-dusk": "WCAG",
+  "Color-primitives-dusk": "WCAG 6.1",
   "Color-primitives-day": "WCAG",
   "Color-primitives-night": "WCAG",
   "dusk-configuration": "v2",
@@ -50,7 +50,7 @@ figma.codegen.on("generate", async (event) => {
   if (event.language === "variables") {
     return await generateColorVariableMap(event);
   } else if (event.language === "cssvariables") {
-    return await generateCssPaletteFromVariabler();
+    return await generateCssPaletteFromVariabler(event);
   } else if (event.language === "css") {
     return await getCss(event);
   } else {
@@ -74,11 +74,6 @@ async function getCss(event: CodegenEvent): Promise<CodegenResult[]> {
     });
 
     result.push(key + ": " + value + ";");
-
-    if (key.startsWith("box-shadow")) {
-      console.log(key, css[key]);
-      console.log(value);
-    }
   }
 
   return [
@@ -152,8 +147,8 @@ async function generateColorVariableMap(
 }
 
 async function followVariableReferences(
-  value: VariableValue | null, allVariables: Variable[], allCollections: (VariableCollection | null)[], paletteCollection: VariableCollection, mode: { modeId: string; name: string }
-) : Promise<VariableValue | null>  {
+  value: VariableValue | null | undefined, allVariables: Variable[], allCollections: (VariableCollection | null)[], paletteCollection: VariableCollection, mode: { modeId: string; name: string }, variableModes: Record<string, string>
+) : Promise<VariableValue | null | undefined>  {
     if (value === null || value === undefined) {
       console.warn("Value is null or undefined", value);
       return null;
@@ -172,31 +167,40 @@ async function followVariableReferences(
         }
         if (aliasVariable.variableCollectionId === paletteCollection.id) {
           value = aliasVariable.valuesByMode[mode.modeId];
-          value = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode);
+          value = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode, variableModes);
         } else {
-          const collection = allCollections.find(
+          let collection = allCollections.find(
             (c) => c?.id === aliasVariable.variableCollectionId
           );
           if (!collection) {
-            console.warn(
-              "Collection not found",
-              aliasVariable.variableCollectionId
-            );
-            return null
+             collection = await figma.variables.getVariableCollectionByIdAsync(aliasVariable.variableCollectionId);
+             if (!collection) {
+               console.info(
+                 "Collection not found",
+                 aliasVariable.variableCollectionId
+               );
+               return null
+             }
+             console.log("Collection found", collection.name, collection.modes);
+            allCollections.push(collection);
           }
           let collectionMode: { modeId: string; name: string } | undefined;
           if (collection.modes.length === 1) {
             collectionMode = collection.modes[0];
+          } else if (collection.name === "Color-categorical") {
+            return undefined;
+          }  else if (collection.id in variableModes) {
+            const modeId = variableModes[collection.id];
+            collectionMode = collection.modes.find(m => m.modeId === modeId);
           } else if (collection.name in VariableModes) {
-            collectionMode = collection.modes.find(
-              (m) => m.name === VariableModes[collection.name]
-            );
+            collectionMode = collection.modes.find(m => m.name === VariableModes[collection.name]);
           } else {
             console.warn("Collection mode not found", collection.name, collection.modes);
             return null
           }
+          
           if (!collectionMode) {
-            console.warn("Mode not found", "WCAG", collection.modes);
+            console.warn("Mode not found", collection.name, collection.modes);
             return null
           }
           value = aliasVariable.valuesByMode[collectionMode.modeId];
@@ -204,7 +208,7 @@ async function followVariableReferences(
             console.warn("Value is null or undefined", aliasVariable.name, collectionMode.name);
             return null;
           }
-          const out = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode);
+          const out = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode, variableModes);
           if (out === null || out === undefined) {
             console.warn("Follow variable references returned null", aliasVariable.name, mode.name);
             return null;
@@ -215,7 +219,8 @@ async function followVariableReferences(
       return value;
     }
 
-async function generateCssPalette(): Promise<string> {
+async function generateCssPalette(event: CodegenEvent): Promise<string> {
+  const variableModes = event.node.resolvedVariableModes;
   console.log("generateCssPaletteFromVariabler1");
   const allVariables = await figma.variables.getLocalVariablesAsync();
   const collectionIds = allVariables.map((v) => v.variableCollectionId);
@@ -246,18 +251,22 @@ async function generateCssPalette(): Promise<string> {
     out += ":root[data-obc-theme='" + mode.name.toLowerCase() + "'] {\n";
     out += fixedPalletContent[mode.name.toLowerCase()];
     for (const variable of palletteVariables) {
-      let value: VariableValue | null = variable.valuesByMode[mode.modeId];
+      let value: VariableValue | null | undefined = variable.valuesByMode[mode.modeId];
       const name = rename(variable.name);
-      value = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode);
+      value = await followVariableReferences(value, allVariables, allCollections, paletteCollection, mode, variableModes);
+     
+
+      if (value === null) {
+        console.warn("Variable not found", variable.name, mode.name);
+        continue;
+      } else if (value === undefined) {
+        continue;
+      }
+
       if (!(value instanceof Object)) {
         out += await value2str(value, name, allVariables);
         continue;
       } 
-
-      if (value === null || value === undefined) {
-        console.warn("Variable not found", variable.name, mode.name);
-        continue;
-      }
       try {
         const color = rgbaToHexOrColorName(value as Color);
         out += "  " + name + ": " + color + ";\n";
@@ -338,9 +347,12 @@ async function generateCssSizesFixedMode(options: {collectionName: string, mode:
 }
 
 async function value2str(value: VariableValue | null | undefined, name: string, allVariables: Variable[]): Promise<string> {
-  if (value === null || value === undefined) {
+  if (value === null) {
     console.warn("Value is null or undefined", name);
     return "";
+  }
+  if (value === undefined) {
+    throw new Error("Value is undefined: " + name);
   }
   if (typeof value === "number") {
     if (name.includes("font-weight")) {
@@ -373,7 +385,7 @@ async function value2str(value: VariableValue | null | undefined, name: string, 
   }
 }
 
-async function generateCssPaletteFromVariabler(): Promise<CodegenResult[]> {
+async function generateCssPaletteFromVariabler( event: CodegenEvent): Promise<CodegenResult[]> {
   let out = await generateCssSizes({collectionName: "Component-size", cssPrefix: ".obc-component-size-"});
   out += "* {\n";
   out += await generateCssSizesFixedMode({collectionName: ".typography-primitives", mode: "Regular"});
@@ -381,7 +393,7 @@ async function generateCssPaletteFromVariabler(): Promise<CodegenResult[]> {
   out += await generateCssSizesFixedMode({collectionName: "component-primitives", mode: "Value"});
   out += fixedCssContent;
   out += "} \n";
-  out += "\n\n" + await generateCssPalette();
+  out += "\n\n" + await generateCssPalette(event);
   out += extraCss;
 
   return [
@@ -422,13 +434,13 @@ const fixedPalletContent: {[pallet: string]: string} = {
 
 const extraCss = `
 @property --alarm-blink-on {
-  syntax: "number";
+  syntax: "<number>";
   inherits: true;
   initial-value: 1;
 }
 
 @property --alarm-blink-off {
-  syntax: "number";
+  syntax: "<number>";
   inherits: true;
   initial-value: 0;
 }
@@ -465,13 +477,13 @@ const extraCss = `
 }
 
 @property --warning-blink-on {
-  syntax: "number";
+  syntax: "<number>";
   inherits: true;
   initial-value: 1;
 }
 
 @property --warning-blink-off {
-  syntax: "number";
+  syntax: "<number>";
   inherits: true;
   initial-value: 0;
 }
