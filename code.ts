@@ -221,7 +221,6 @@ async function followVariableReferences(
 
 async function generateCssPalette(event: CodegenEvent): Promise<string> {
   const variableModes = event.node.resolvedVariableModes;
-  console.log("generateCssPaletteFromVariabler1");
   const allVariables = await figma.variables.getLocalVariablesAsync();
   const collectionIds = allVariables.map((v) => v.variableCollectionId);
   const allCollections = await Promise.all(
@@ -249,7 +248,10 @@ async function generateCssPalette(event: CodegenEvent): Promise<string> {
       out += ":root, ";
     }
     out += ":root[data-obc-theme='" + mode.name.toLowerCase() + "'] {\n";
-    out += fixedPalletContent[mode.name.toLowerCase()];
+    const fixed = Object.keys(fixedPalletContent).find(c => mode.name.toLowerCase().startsWith(c));
+    if (fixed) {
+      out += fixedPalletContent[fixed];
+    }
     for (const variable of palletteVariables) {
       let value: VariableValue | null | undefined = variable.valuesByMode[mode.modeId];
       const name = rename(variable.name);
