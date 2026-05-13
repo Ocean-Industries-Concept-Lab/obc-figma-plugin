@@ -20,6 +20,14 @@
     {
       "label": "css variables export",
       "value": "cssvariables"
+    },
+    {
+      "label": "Font exports",
+      "value": "font-exports"
+    },
+    {
+      "label": "variables map",
+      "value": "variables"
     }
   ],
   "networkAccess": {

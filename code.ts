@@ -27,7 +27,8 @@ function rename(name: string): string {
     .replace(/\(/g, "")
     .replace(/\)/g, "")
     .replace(/--/g, "-")
-    .replace(/styles-/g, "");
+    .replace(/styles-/g, "")
+    .replace(/integration-beta/g, "integration");
   const hasOnRegex = /^.*-on-(.*)$/;
   const hasIntegrationRegex = /^.*-integration-(.*)$/;
   if (hasOnRegex.test(o) && !hasIntegrationRegex.test(o)) {
@@ -51,7 +52,10 @@ figma.codegen.on("generate", async (event) => {
     return await generateColorVariableMap(event);
   } else if (event.language === "cssvariables") {
     return await generateCssPaletteFromVariabler(event);
-  } else if (event.language === "css") {
+  } else if (event.language === "font-exports") {
+    return await generateFontExports();
+  }
+  else if (event.language === "css") {
     return await getCss(event);
   } else {
     throw new Error("Unsupported language: " + event.language);
@@ -243,11 +247,18 @@ async function generateCssPalette(event: CodegenEvent): Promise<string> {
     (v) => v.variableCollectionId === paletteCollection.id
   );
   let out = "";
+  
+  const parsedNames = new Set<string>();
   for (const mode of modes) {
-    if (mode.name.toLowerCase() === "day") {
+    const cleanName = mode.name.toLowerCase().split(" ")[0];
+    if (parsedNames.has(cleanName)) {
+      continue;
+    }
+    parsedNames.add(cleanName);
+    if (cleanName === "day") {
       out += ":root, ";
     }
-    out += ":root[data-obc-theme='" + mode.name.toLowerCase() + "'] {\n";
+    out += ":root[data-obc-theme='" + cleanName + "'] {\n";
     const fixed = Object.keys(fixedPalletContent).find(c => mode.name.toLowerCase().startsWith(c));
     if (fixed) {
       out += fixedPalletContent[fixed];
@@ -521,4 +532,47 @@ function rgbaToHexOrColorName(rgba: Color): string {
       rgba.g * 255
     )}, ${Math.round(rgba.b * 255)})`;
   }
+}
+
+async function generateFontExports(): Promise<CodegenResult[]> {
+  const textStyles = await figma.getLocalTextStylesAsync();
+  let out = "";
+
+  for (const textStyle of textStyles) {
+    const name = renameFont(textStyle.name);
+    out += `@define-mixin font-${name} {\n`;
+    if (textStyle.boundVariables?.fontFamily) {
+       out += await value2str(textStyle.boundVariables.fontFamily, "font-family", []);
+    } else {
+      out += "font-family: " + textStyle.fontName.family + ";\n";
+    }
+    if (textStyle.boundVariables?.fontWeight) {
+      out += await value2str(textStyle.boundVariables.fontWeight, "font-weight", []);
+    }
+    if (textStyle.boundVariables?.fontSize) {
+      out += await value2str(textStyle.boundVariables.fontSize, "font-size", []);
+    }
+    if (textStyle.boundVariables?.lineHeight) {
+      out += await value2str(textStyle.boundVariables.lineHeight, "line-height", []);
+    }
+    if (textStyle.boundVariables?.letterSpacing) {
+      out += await value2str(textStyle.boundVariables.letterSpacing, "letter-spacing", []);
+    }
+    out += "  font-feature-settings: 'liga' off, 'clig' off, 'ss04' on;\n";
+    out += "}\n\n";
+  }
+  return [
+    {
+      language: "CSS",
+      code: out,
+      title: "Codegen Plugin",
+    },
+  ];
+}
+
+function renameFont(name: string): string {
+  return name.toLowerCase()
+      .replace(/ /g, "-")
+      .replace(/\//g, "-")
+      .replace(/ui-/, "");
 }
