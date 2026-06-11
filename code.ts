@@ -402,6 +402,7 @@ async function generateCssPaletteFromVariabler( event: CodegenEvent): Promise<Co
   let out = await generateCssSizes({collectionName: "Component-size", cssPrefix: ".obc-component-size-"});
   out += "* {\n";
   out += await generateCssSizesFixedMode({collectionName: ".typography-primitives", mode: "Regular"});
+  out += await generateCssSizesFixedMode({collectionName: "Typography-primitives-6.2", mode: "Value"});
   out += await generateCssSizesFixedMode({collectionName: "Set-component-corners", mode: "Regular"});
   out += await generateCssSizesFixedMode({collectionName: "component-primitives", mode: "Value"});
   out += fixedCssContent;
