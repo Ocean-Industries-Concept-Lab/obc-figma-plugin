@@ -359,6 +359,137 @@ async function generateCssSizesFixedMode(options: {collectionName: string, mode:
   return out;
 }
 
+function isVariableAlias(
+  value: VariableValue | null | undefined
+): value is VariableAlias {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    (value as VariableAlias).type === "VARIABLE_ALIAS"
+  );
+}
+
+// Fix for https://github.com/Ocean-Industries-Concept-Lab/obc-figma-plugin/issues/1
+//
+// The size loops (generateCssSizes / generateCssSizesFixedMode) emit alias
+// references via value2str as `var(--<target>)` unconditionally. When the alias
+// target lives in a collection that is NOT part of the css-variables export
+// (e.g. Set-instrument-digits, Set-scale-type), that `var(--<target>)` has no
+// matching `--<target>:` definition anywhere in the output, producing a dangling
+// reference that silently resolves to `unset` at runtime.
+//
+// This resolver walks every alias used by the exported size collections,
+// collects the targets that live in non-exported (intermediate) collections, and
+// emits a top-level definition for each using that collection's default mode.
+// The indirection is preserved, so the intermediate "switch" collections can
+// still be overridden at runtime, while the emitted CSS becomes self-contained.
+async function generateDanglingAliasTargets(
+  exportedCollectionNames: string[]
+): Promise<string> {
+  const allVariables = await figma.variables.getLocalVariablesAsync();
+  const variableById = new Map<string, Variable>();
+  for (const v of allVariables) {
+    variableById.set(v.id, v);
+  }
+
+  const collectionIds = Array.from(
+    new Set(allVariables.map((v) => v.variableCollectionId))
+  );
+  const collections = await Promise.all(
+    collectionIds.map((id) =>
+      figma.variables.getVariableCollectionByIdAsync(id)
+    )
+  );
+  const collectionById = new Map<string, VariableCollection>();
+  for (const c of collections) {
+    if (c) {
+      collectionById.set(c.id, c);
+    }
+  }
+
+  const exportedCollectionIds = new Set<string>();
+  for (const name of exportedCollectionNames) {
+    const collection = collections.find((c) => c?.name === name);
+    if (collection) {
+      exportedCollectionIds.add(collection.id);
+    }
+  }
+
+  const getVariable = async (id: string): Promise<Variable | null> => {
+    const cached = variableById.get(id);
+    if (cached) {
+      return cached;
+    }
+    const fetched = await figma.variables.getVariableByIdAsync(id);
+    if (fetched) {
+      variableById.set(fetched.id, fetched);
+    }
+    return fetched;
+  };
+
+  // Breadth-first collection of intermediate alias targets, with transitive
+  // closure and cycle protection (these chains can bounce between collections,
+  // e.g. Component-size -> Set-instrument-digits -> Component-size).
+  const queued = new Set<string>();
+  const queue: string[] = [];
+  const enqueueTarget = async (value: VariableValue | null | undefined) => {
+    if (!isVariableAlias(value)) {
+      return;
+    }
+    const target = await getVariable(value.id);
+    if (
+      target &&
+      !exportedCollectionIds.has(target.variableCollectionId) &&
+      !queued.has(target.id)
+    ) {
+      queued.add(target.id);
+      queue.push(target.id);
+    }
+  };
+
+  for (const variable of allVariables) {
+    if (!exportedCollectionIds.has(variable.variableCollectionId)) {
+      continue;
+    }
+    for (const modeValue of Object.values(variable.valuesByMode)) {
+      await enqueueTarget(modeValue);
+    }
+  }
+
+  let out = "";
+  const emittedNames = new Set<string>();
+  while (queue.length > 0) {
+    const id = queue.shift() as string;
+    const variable = await getVariable(id);
+    if (!variable) {
+      continue;
+    }
+    const collection = collectionById.get(variable.variableCollectionId);
+    if (!collection) {
+      continue;
+    }
+    // Use the collection's default mode to represent the design-time default,
+    // matching the mode the designers selected as the baseline.
+    const mode =
+      collection.modes.find((m) => m.modeId === collection.defaultModeId) ??
+      collection.modes[0];
+    const value = variable.valuesByMode[mode.modeId];
+    if (value === null || value === undefined) {
+      continue;
+    }
+    // The intermediate value may itself alias another non-exported collection.
+    await enqueueTarget(value);
+    const name = rename(variable.name);
+    if (emittedNames.has(name)) {
+      continue;
+    }
+    emittedNames.add(name);
+    out += await value2str(value, name, allVariables);
+  }
+  return out;
+}
+
 async function value2str(value: VariableValue | null | undefined, name: string, allVariables: Variable[]): Promise<string> {
   if (value === null) {
     console.warn("Value is null or undefined", name);
@@ -405,6 +536,12 @@ async function generateCssPaletteFromVariabler( event: CodegenEvent): Promise<Co
   out += await generateCssSizesFixedMode({collectionName: "Typography-primitives-6.2", mode: "Value"});
   out += await generateCssSizesFixedMode({collectionName: "Set-component-corners", mode: "Regular"});
   out += await generateCssSizesFixedMode({collectionName: "component-primitives", mode: "Value"});
+  out += await generateDanglingAliasTargets([
+    "Component-size",
+    ".typography-primitives",
+    "Set-component-corners",
+    "component-primitives",
+  ]);
   out += fixedCssContent;
   out += "} \n";
   out += "\n\n" + await generateCssPalette(event);
