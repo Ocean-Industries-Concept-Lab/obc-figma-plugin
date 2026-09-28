@@ -21,6 +21,51 @@ const VariableModes: Record<string, string> = {
 // token that aliases into one of them keeps the reference, so the class decides.
 const CLASS_EXPORTED_COLLECTIONS = new Set(["Color-categorical"]);
 
+// A collection whose mode could not be picked by name used to make
+// followVariableReferences return null, and generateCssPalette then dropped the
+// token without a trace: the export still looked plausible while a whole theme
+// had lost every primitive-backed colour. The names below drift (Figma renames a
+// contrast mode, or a new theme appears), so a miss now falls back to the
+// collection's default mode and is reported next to the generated CSS.
+const modeFallbacks = new Map<string, string>();
+const unresolvedTokens = new Map<string, number>();
+
+function resolveFallbackMode(collection: VariableCollection): { modeId: string; name: string } | undefined {
+  const fallback = collection.modes.find((m) => m.modeId === collection.defaultModeId) ?? collection.modes[0];
+  if (!fallback) {
+    return undefined;
+  }
+  if (!modeFallbacks.has(collection.name)) {
+    const asked = VariableModes[collection.name];
+    modeFallbacks.set(
+      collection.name,
+      asked
+        ? 'asked for mode "' + asked + '", which this collection does not have; used "' + fallback.name + '"'
+        : 'no mode configured for this collection; used "' + fallback.name + '"'
+    );
+  }
+  return fallback;
+}
+
+function generatorWarnings(): string {
+  let out = "";
+  for (const [name, note] of modeFallbacks) {
+    out += "Mode fallback in " + name + ": " + note + "\n";
+  }
+  for (const [theme, count] of unresolvedTokens) {
+    out += "Unresolved: " + count + " token(s) dropped from the " + theme + " block\n";
+  }
+  if (out) {
+    out =
+      "The export is not a faithful copy of the file. Check these before pasting it:\n\n" +
+      out +
+      "\nA mode fallback means VariableModes in code.ts is out of date. Confirm the mode\n" +
+      "with the designers and fix the map; the values above were exported with the\n" +
+      "collection's default mode.\n";
+  }
+  return out;
+}
+
 // Palette tokens that alias into a class-exported collection, by CSS name and
 // theme. They are emitted inside the class blocks, where the mode is known: a
 // var() is substituted on the element that declares it, so a reference on the
@@ -241,11 +286,11 @@ async function followVariableReferences(
           collectionMode = collection.modes.find(m => m.modeId === modeId);
         } else if (collection.name in VariableModes) {
           collectionMode = collection.modes.find(m => m.name === VariableModes[collection.name]);
-        } else {
-          console.warn("Collection mode not found", collection.name, collection.modes);
-          return null
         }
 
+        if (!collectionMode) {
+          collectionMode = resolveFallbackMode(collection);
+        }
         if (!collectionMode) {
           console.warn("Mode not found", collection.name, collection.modes);
           return null
@@ -274,7 +319,13 @@ async function followVariableReferences(
     }
 
 async function generateCssPalette(event: CodegenEvent): Promise<string> {
-  const variableModes = event.node.resolvedVariableModes;
+  // Deliberately not event.node.resolvedVariableModes. Reading the selection's
+  // modes made the same file export different CSS depending on what happened to
+  // be selected, and it hid the stale names in VariableModes for as long as the
+  // selection pinned those collections. The modes now come from VariableModes,
+  // then from the collection's default, so an export is reproducible.
+  const variableModes: Record<string, string> = {};
+  void event;
   const allVariables = await figma.variables.getLocalVariablesAsync();
   const collectionIds = allVariables.map((v) => v.variableCollectionId);
   const allCollections = await Promise.all(
@@ -321,6 +372,7 @@ async function generateCssPalette(event: CodegenEvent): Promise<string> {
 
       if (value === null) {
         console.warn("Variable not found", variable.name, mode.name);
+        unresolvedTokens.set(cleanName, (unresolvedTokens.get(cleanName) ?? 0) + 1);
         continue;
       } else if (value === undefined) {
         continue;
@@ -663,6 +715,8 @@ async function value2str(value: VariableValue | null | undefined, name: string, 
 
 async function generateCssPaletteFromVariabler( event: CodegenEvent): Promise<CodegenResult[]> {
   classExportedAliases.clear();
+  modeFallbacks.clear();
+  unresolvedTokens.clear();
   let out = await generateCssSizes({collectionName: "Component-size", cssPrefix: ".obc-component-size-", rootMode: "regular"});
   out += "* {\n";
   out += await generateCssSizesFixedMode({collectionName: ".typography-primitives", mode: "Regular"});
@@ -681,13 +735,22 @@ async function generateCssPaletteFromVariabler( event: CodegenEvent): Promise<Co
   out += "\n" + await generateClassExportedBlocks({collectionName: "Color-categorical", cssPrefix: ".obc-categorical-color-", rootMode: "neutral", defaultTheme: "day"});
   out += extraCss;
 
-  return [
+  const results: CodegenResult[] = [
     {
       language: "CSS",
       code: out,
       title: "Codegen Plugin",
     },
   ];
+  const warnings = generatorWarnings();
+  if (warnings) {
+    results.unshift({
+      language: "PLAINTEXT",
+      code: warnings,
+      title: "⚠ Export warnings",
+    });
+  }
+  return results;
 }
 
 const fixedCssContent= ` --shadow-flat: var(--shadow-flat-x) var(--shadow-flat-y)
